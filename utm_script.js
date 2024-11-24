@@ -1,10 +1,6 @@
 <script>
 // UTM and Referrer Attribution Script for Framer Sites
 
-// Add this in the "end of header" code in your Framer Site.
-// It will automatically store the UTM parameters, referrer, and last page URL in a browser cookie and append them to the form data prior to submission.
-// You can then use them in Zapier (for instance).
-
 // Function to get UTM parameters from URL
 function getUTMParameters() {
     const utmParams = {};
@@ -91,33 +87,51 @@ function storeParams() {
     }
 }
 
-// Function to add parameters to form
+// Function to add parameters to form with verification
 function addParamsToForm(form) {
     const paramsStr = getCookie('attribution_params');
-    if (paramsStr) {
-        try {
-            const params = JSON.parse(paramsStr);
-            // Update the page_url to the current page before adding to form
-            params.page_url = getCurrentPageURL();
-            
-            for (const [key, value] of Object.entries(params)) {
-                if (value !== null && value !== undefined) {
-                    let input = form.querySelector(`input[name="${key}"]`);
-                    if (!input) {
-                        input = document.createElement('input');
-                        input.type = 'hidden';
-                        input.name = key;
-                        form.appendChild(input);
-                    }
-                    input.value = value;
+    if (!paramsStr) return;
+
+    try {
+        const params = JSON.parse(paramsStr);
+        // Update the page_url to the current page before adding to form
+        params.page_url = getCurrentPageURL();
+        
+        // First, verify all fields exist
+        for (const [key, value] of Object.entries(params)) {
+            if (value !== null && value !== undefined) {
+                let input = form.querySelector(`input[name="${key}"]`);
+                if (!input) {
+                    input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = key;
+                    input.className = 'utm-tracking-field';
+                    form.appendChild(input);
                 }
+                input.value = value;
             }
-            
-            // Update the cookie with the new page_url
-            setCookie('attribution_params', JSON.stringify(params), 30);
-        } catch (e) {
-            console.log('Error adding params to form');
         }
+
+        // Double-check all fields are present with correct values
+        for (const [key, value] of Object.entries(params)) {
+            const input = form.querySelector(`input[name="${key}"]`);
+            if (!input || input.value !== value) {
+                const newInput = document.createElement('input');
+                newInput.type = 'hidden';
+                newInput.name = key;
+                newInput.className = 'utm-tracking-field';
+                newInput.value = value;
+                if (input) {
+                    form.removeChild(input);
+                }
+                form.appendChild(newInput);
+            }
+        }
+
+        // Update the cookie with the new page_url
+        setCookie('attribution_params', JSON.stringify(params), 30);
+    } catch (e) {
+        console.log('Error adding params to form:', e);
     }
 }
 
@@ -136,8 +150,23 @@ function logParams() {
 }
 
 // Function to handle form submission
-function handleFormSubmit(form) {
+function handleFormSubmit(event) {
+    const form = event.target;
+    
+    // First attempt at adding parameters
     addParamsToForm(form);
+    
+    // Double check parameters were added
+    const paramsStr = getCookie('attribution_params');
+    if (paramsStr) {
+        const params = JSON.parse(paramsStr);
+        const missingFields = Object.keys(params).filter(key => !form.querySelector(`input[name="${key}"]`));
+        
+        if (missingFields.length > 0) {
+            // If any fields are missing, try adding them again
+            addParamsToForm(form);
+        }
+    }
 }
 
 // Function to initialize tracking
@@ -150,30 +179,68 @@ function initTracking() {
         storeParams();
         logParams();
 
-        // Add parameters to existing forms
-        const forms = document.getElementsByTagName('form');
-        for (let i = 0; i < forms.length; i++) {
-            forms[i].addEventListener('submit', function(e) {
-                handleFormSubmit(this);
+        // Function to attach form handlers
+        function attachFormHandlers(form) {
+            // Remove any existing handlers
+            form.removeEventListener('submit', handleFormSubmit);
+            
+            // Add the submit event listener
+            form.addEventListener('submit', handleFormSubmit);
+            
+            // Also watch for direct submits
+            const submitButtons = form.querySelectorAll('button[type="submit"], input[type="submit"]');
+            submitButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    addParamsToForm(form);
+                });
             });
         }
 
-        // Use a MutationObserver to watch for dynamically added forms
+        // Add parameters to existing forms
+        const forms = document.getElementsByTagName('form');
+        for (let i = 0; i < forms.length; i++) {
+            attachFormHandlers(forms[i]);
+        }
+
+        // Enhanced MutationObserver to watch for dynamically added forms
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
-                if (mutation.type === 'childList') {
-                    mutation.addedNodes.forEach((node) => {
-                        if (node.nodeName === 'FORM') {
-                            node.addEventListener('submit', function(e) {
-                                handleFormSubmit(this);
-                            });
-                        }
-                    });
+                // Look for new forms
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeName === 'FORM') {
+                        attachFormHandlers(node);
+                    }
+                    // Also look for forms within added nodes
+                    if (node.querySelectorAll) {
+                        const forms = node.querySelectorAll('form');
+                        forms.forEach(form => attachFormHandlers(form));
+                    }
+                });
+
+                // Check for attribute changes on forms
+                if (mutation.target.nodeName === 'FORM') {
+                    attachFormHandlers(mutation.target);
                 }
             });
         });
 
-        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['action', 'method']
+        });
+
+        // Periodically verify forms have parameters
+        setInterval(() => {
+            const forms = document.getElementsByTagName('form');
+            for (let i = 0; i < forms.length; i++) {
+                const form = forms[i];
+                if (!form.querySelector('.utm-tracking-field')) {
+                    attachFormHandlers(form);
+                }
+            }
+        }, 2000);
     }
 }
 
